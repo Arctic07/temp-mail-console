@@ -93,7 +93,7 @@ export default {
       }
       const parsed = safeParseJson(row.extracted_json);
       const resultValue = Array.isArray(parsed)
-        ? (parsed.find((value) => value !== null && value !== undefined) ?? null)
+        ? (parsed[0] ?? null)
         : (parsed ?? null);
       return json({
         from_address: row.from_address,
@@ -271,13 +271,11 @@ function applyRules(content, sender, rules) {
     try {
       const regex = new RegExp(rule.pattern, "m");
       const match = content.match(regex);
-      outputs.push({
-        value: match ? match[0] : null
-      });
+      if (match && match[0]) {
+        outputs.push(match[0]);
+      }
     } catch (error) {
-      outputs.push({
-        value: null
-      });
+      continue;
     }
   }
   return outputs;
@@ -436,19 +434,32 @@ function renderHtml() {
             </div>
           </div>
           <div class="p-4 space-y-3">
-            <div class="grid grid-cols-[1.5fr,1.5fr,1fr] gap-2 text-[11px] text-slate-400 uppercase tracking-wide">
+            <div class="grid grid-cols-[1.3fr,1.2fr,1.2fr,0.8fr] gap-3 text-[11px] text-slate-400 uppercase tracking-wide">
               <div>主题</div>
-              <div>发件人 / 收件人</div>
+              <div>发件人</div>
+              <div>收件人</div>
               <div class="text-right">时间</div>
             </div>
             <div v-if="items.length===0" class="min-h-[240px] flex items-center justify-center text-xs text-slate-400">暂无邮件记录</div>
-            <div v-for="item in items" :key="item.message_id" class="p-3 rounded-lg border border-white/10 bg-slate-950/40">
-              <div class="flex items-center justify-between">
-                <h3 class="text-sm font-medium">{{ item.subject || '(无主题)' }}</h3>
-                <span class="text-[11px] text-slate-400">{{ formatTime(item.received_at) }}</span>
+            <div v-for="item in items" :key="item.message_id" class="p-3 rounded-lg border border-white/10 bg-slate-950/40 cursor-pointer" @click="toggleResult(item.message_id)">
+              <div class="grid grid-cols-[1.3fr,1.2fr,1.2fr,0.8fr] gap-3 items-start">
+                <div class="min-w-0">
+                  <div class="text-sm font-medium truncate">{{ item.subject || '(无主题)' }}</div>
+                </div>
+                <div class="min-w-0 text-[11px] text-slate-400 truncate">{{ item.from_address }}</div>
+                <div class="min-w-0 text-[11px] text-slate-400 truncate">{{ item.to_address }}</div>
+                <div class="text-[11px] text-slate-400 text-right">{{ formatTime(item.received_at) }}</div>
+                <div class="col-span-4 mt-2">
+                  <div v-if="hasResult(item.extracted_json)" class="text-[11px] text-slate-400">
+                    {{ expandedResults[item.message_id] ? '收起命中结果' : '命中结果' }}
+                  </div>
+                  <div v-else class="text-[11px] text-slate-400">未命中规则</div>
+                  <div
+                    v-if="expandedResults[item.message_id]"
+                    class="mt-2 text-[11px] bg-slate-950/60 border border-white/10 rounded-md p-2 whitespace-pre-wrap"
+                  >{{ formatResult(item.extracted_json) }}</div>
+                </div>
               </div>
-              <div class="text-[11px] text-slate-400 mt-1">From: {{ item.from_address }} · To: {{ item.to_address }}</div>
-              <div class="mt-2 text-[11px] bg-slate-950/60 border border-white/10 rounded-md p-2 whitespace-pre-wrap">{{ item.extracted_json }}</div>
             </div>
           </div>
         </section>
@@ -558,7 +569,8 @@ data.result: 命中结果值（单个值）</pre>
             activeTab: "emails",
             adminToken: "",
             adminError: "",
-            poller: null
+            poller: null,
+            expandedResults: {}
           };
         },
         computed: {
@@ -678,6 +690,31 @@ data.result: 命中结果值（单个值）</pre>
             if (this.page < this.totalPages) {
               this.page += 1;
               await this.loadList();
+            }
+          },
+          toggleResult(messageId) {
+            this.expandedResults[messageId] = !this.expandedResults[messageId];
+          },
+          hasResult(raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                return parsed.length > 0;
+              }
+              return Boolean(parsed);
+            } catch (error) {
+              return false;
+            }
+          },
+          formatResult(raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                return parsed.join(", ");
+              }
+              return String(parsed ?? "");
+            } catch (error) {
+              return raw || "";
             }
           },
           async prevPage() {
