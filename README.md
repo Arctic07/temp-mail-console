@@ -158,18 +158,18 @@ GET /api/emails/latest?address=<email_address>
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `from_address` | 发件人邮箱 |
-| `to_address` | 收件人邮箱（多个收件人时用逗号分隔） |
-| `received_at` | 收件时间戳（毫秒） |
-| `results` | 命中结果数组，每项包含 `rule_id`、`value`、`remark` |
+### 13. [API 进阶说明] 字段定义
 
-**错误响应：**
-
-```json
-{ "code": 404, "message": "message not found" }
-```
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | `number` | 业务状态码，200 表示成功 |
+| `data.from_address` | `string` | 发件人电子邮箱地址 |
+| `data.to_address` | `string` | 收件人电子邮箱地址 |
+| `data.received_at` | `number` | 邮件接收时间戳（13位毫秒） |
+| `data.results` | `array` | 命中规则提取的结果列表 |
+| `..rule_id` | `number` | 匹配到的规则唯一 ID |
+| `..value` | `string` | 正则匹配提取到的实际内容 |
+| `..remark` | `string` | 规则的备注说明（可能为 null） |
 
 ## 规则说明
 
@@ -210,16 +210,26 @@ curl "http://localhost:8787/api/emails/latest?address=demo@yourdomain.com" \
   -H "Authorization: Bearer dev-api-token"
 ```
 
-## 项目结构
+## 项目结构 (专业模块化)
 
 ```
 ├── src/
-│   └── index.js        # Worker 入口（邮件处理 + HTTP 路由 + 前端页面）
+│   ├── index.js                 # Worker 入口（协调各模块处理事件）
+│   ├── core/
+│   │   ├── auth.js              # 管理员与 API 鉴权校验
+│   │   ├── db.js                # D1 数据库初始化与存取操作
+│   │   └── logic.js             # 邮件解析与正则匹配核心业务
+│   ├── handlers/
+│   │   └── handlers.js          # HTTP 路由处理函数集合
+│   ├── ui/
+│   │   └── templates.js         # UI HTML/CSS 模板
+│   └── utils/
+│       ├── constants.js         # 全局常量与 Schema 定义
+│       └── utils.js             # 通用 JSON 响应与助手函数
 ├── test/
-│   └── sample.eml      # 本地测试用示例邮件
-├── images/             # README 截图
-├── schema.sql          # D1 建表语句
-├── wrangler.toml       # Wrangler 配置
+│   └── sample.eml               # 本地测试用示例邮件
+├── images/                      # README 截图
+├── wrangler.toml                # Wrangler 配置
 └── package.json
 ```
 
