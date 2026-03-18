@@ -1,27 +1,4 @@
-import { SCHEMA_STATEMENTS } from "../utils/constants.js";
-
 // ─── 数据库操作与状态管理 ───────────────────────────────────────────────────
-
-let schemaReadyPromise = null;
-
-/**
- * 确保数据库模式 (Schema) 已初始化
- */
-export async function ensureSchema(db) {
-  if (!schemaReadyPromise) {
-    schemaReadyPromise = (async () => {
-      for (const statement of SCHEMA_STATEMENTS) {
-        await db.prepare(statement).run();
-      }
-    })().catch((err) => {
-      schemaReadyPromise = null;
-      console.error("Schema initialization failed:", err);
-      throw err;
-    });
-  }
-  return schemaReadyPromise;
-}
-
 /**
  * 格式化规则对象
  */

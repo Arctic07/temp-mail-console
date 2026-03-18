@@ -1,7 +1,7 @@
 import { PAGE_SIZE, RULES_PAGE_SIZE, HTML_HEADERS, CORS_HEADERS } from "./utils/constants.js";
 import { jsonError, applyCors } from "./utils/utils.js";
 import { isAdminAuthorized, isApiAuthorized } from "./core/auth.js";
-import { ensureSchema, clearExpiredEmails } from "./core/db.js";
+import { clearExpiredEmails } from "./core/db.js";
 import { processIncomingEmail } from "./core/logic.js";
 import * as handlers from "./handlers/handlers.js";
 import { renderAuthHtml, renderHtml } from "./ui/templates.js";
@@ -44,7 +44,6 @@ export default {
       if (method === "OPTIONS") return apiOptionsResponse();
       if (method !== "GET") return apiJsonError("Method Not Allowed", 405);
       if (!isApiAuthorized(request, env.API_TOKEN)) return apiJsonError("Unauthorized", 401);
-      await ensureSchema(env.DB);
       const res = await handlers.handleEmailsLatest(url, env.DB);
       return applyCors(res, CORS_HEADERS);
     }
@@ -60,7 +59,6 @@ export default {
     // 3. 管理端路由 (/admin/...)
     if (pathname.startsWith("/admin/")) {
       if (!isAdminAuthorized(request, env.ADMIN_TOKEN)) return new Response("Unauthorized", { status: 401 });
-      await ensureSchema(env.DB);
 
       // 分发请求
       if (pathname === "/admin/domains" && method === "GET") return handlers.handleAdminDomains(url, env.DB);
@@ -81,7 +79,6 @@ export default {
    * 定时清理任务
    */
   async scheduled(_event, env, ctx) {
-    await ensureSchema(env.DB);
     ctx.waitUntil(
       clearExpiredEmails(env.DB, 48)
         .then(() => console.log("[Cron] 自动清理完毕"))

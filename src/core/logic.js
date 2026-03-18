@@ -1,5 +1,5 @@
 import PostalMime from "postal-mime";
-import { ensureSchema, loadRules, loadWhitelist, saveEmail } from "./db.js";
+import { loadRules, loadWhitelist, saveEmail } from "./db.js";
 import { MAX_MATCH_CONTENT_CHARS, MAX_RULE_PATTERN_LENGTH, MAX_SENDER_PATTERN_LENGTH } from "../utils/constants.js";
 
 // ─── 核心业务逻辑 (Email Processing) ──────────────────────────────────────────
@@ -72,7 +72,6 @@ function senderMatches(senderValue, filterValue) {
  * 集中处理入站邮件的完整流程 (解析 -> 过滤 -> 匹配 -> 存储)
  */
 export async function processIncomingEmail(message, env, ctx) {
-  await ensureSchema(env.DB);
   const parsed = await parseIncomingEmail(message);
 
   // Normalize emails to reduce case-sensitivity surprises
