@@ -7,10 +7,5 @@ binding = "DB"
 database_name = "temp-email-db"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
-[vars]
-ADMIN_TOKEN = "dev-admin-token"
-API_TOKEN = "dev-api-token"
-FORWARD_TO = ""
-
 [triggers]
 crons = ["0 * * * *"] # 每小时执行一次，检查并清理超过48小时的数据
