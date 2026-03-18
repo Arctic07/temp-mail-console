@@ -90,6 +90,7 @@ FORWARD_TO=
 生产环境推荐使用 Cloudflare Worker 的 **Secrets / Variables**：
 
 > 在项目根目录执行下面的命令，也就是包含 `wrangler.toml` 的目录。Wrangler 会把 secret 写入当前项目对应的 Cloudflare Worker。
+> 如果一键部署页面要求填写 `FORWARD_TO`，可以先留空；只有在需要自动转发原始邮件时才需要配置它。
 
 ```bash
 npx wrangler secret put ADMIN_TOKEN
