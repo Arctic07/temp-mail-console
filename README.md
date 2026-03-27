@@ -1,281 +1,1464 @@
-# Temp Mail Console
+# Mail 底座
 
-基于 **Cloudflare Workers + D1** 的临时邮箱控制台。接收邮件后，根据可配置的正则规则自动提取关键数据（如验证码），并通过 API 对外提供查询能力。
+一个基于 **Cloudflare Workers + Email Routing + D1** 的轻量邮件能力底座。
 
-## 功能
+它的职责不是提供完整的临时邮箱产品，而是专注于这几件事：
 
-- 🧩 **控制台管理**：邮件列表、规则管理、白名单管理与 API 对接说明。
-- 🛡️ **发件人白名单**：基于正则表达式过滤发信人，不匹配直接忽略。
-- 🔍 **内容正则提取**：对邮件正文进行正则匹配，提取验证码等关键信息。
-- 🖥️ **RESTful API**：对外提供查询接口，便于系统集成。
-- 🔄 **全局邮件转发**：入库后可自动转发原始邮件到真实邮箱。
-- 🧹 **记录自动清理**：Cron 每小时清理 48 小时前的历史数据，防止数据库膨胀。
-- ☁️ **无服务器架构**：基于 Cloudflare Workers + D1，支持低成本托管。
+- 接收入站邮件
+- 管理可接收域名与邮箱地址
+- 存储邮件基础元数据与正文
+- 对外提供内部 API，供你的 **Python 业务层** 调用
+- 定时清理过期邮箱与历史邮件
 
-## 界面预览
+你可以把它理解为：
 
-<table>
-  <tr>
-    <td align="center"><img src="images/pqvxt.png" alt="控制台-邮件列表" width="260" /></td>
-    <td align="center"><img src="images/nldhs.png" alt="控制台-命中规则" width="260" /></td>
-    <td align="center"><img src="images/kbrya.png" alt="控制台-白名单" width="260" /></td>
-  </tr>
-</table>
-
-
-## 快速开始
-
-### 方式一：一键部署（推荐）
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/beyoug/temp-mail-console)
-
-> 点击上方按钮可全自动 Fork 并在你的 Cloudflare 账户上部署该项目，自动分配 D1 数据库资源。部署后别忘了按下方指南补充运行时变量（如 `ADMIN_TOKEN` 和 `API_TOKEN`）以及邮件路由。
-
-> 提示：当前版本会在部署阶段自动执行 D1 migrations。完成 `ADMIN_TOKEN` / `API_TOKEN` 和邮件路由配置后即可使用。
+> **邮件接收与存储平台**
+>
+> 而不是：
+>
+> **最终面向用户的 temp mail 成品**
 
 ---
 
-### 方式二：手动部署
+## 适用场景
 
-### 1. 安装依赖
+这个项目适合你在以下场景中使用：
+
+- 你希望用 **Cloudflare Email Routing** 来接收邮件
+- 你希望底层只做“邮件能力”
+- 你的业务逻辑、用户系统、风控、管理后台都打算放到 **Python** 中
+- 你需要一个简单、稳定、低运维成本的邮件接收底座
+- 你希望用内部 API 的方式把邮件能力接入自己的系统
+
+---
+
+## 当前定位
+
+本项目默认只保留以下职责：
+
+### 保留
+- 入站邮件解析
+- 可接收域名管理
+- 可接收邮箱地址管理
+- 邮件持久化
+- 基础查询接口
+- 定时清理
+
+### 不保留
+- 最终用户控制台
+- 正则提取规则
+- 发件人白名单产品逻辑
+- 面向最终用户的 API Key 体系
+- 业务侧邮箱创建规则
+- 业务侧权限系统
+
+这些能力应该由你的 Python 服务实现。
+
+---
+
+## 核心规则
+
+### 1. 只有已创建邮箱才能接收邮件
+这是当前最重要的规则：
+
+- **域名已启用，不代表该域名下任意地址都能接收**
+- **必须先通过内部 API 创建邮箱地址**
+- **只有已存在、未过期、仍有效的邮箱地址，才会接收邮件**
+
+例如：
+
+- `abc123@example.com` 已创建 → 可以接收
+- `xyz999@example.com` 未创建 → 不接收
+- `demo@example.com` 已过期并被清理 → 不接收
+
+### 2. 即使配置了 catch-all，也不会自动创建邮箱
+就算你在 Cloudflare Email Routing 中配置了 catch-all 路由：
+
+- Worker 仍然只会接收**已经在底座中创建过**的邮箱
+- 未创建地址不会自动入库
+- 未创建地址不会自动补建
+
+### 3. 过期邮箱不会继续接收
+如果一个邮箱已经：
+
+- 到达 `expires_at`
+- 被定时清理删除
+- 被手动删除
+- 被手动禁用
+
+那么之后发往这个地址的邮件将不会再被接收。
+
+---
+
+## 推荐架构
+
+推荐把本项目作为底座层，Python 作为业务层：
+
+```text
+外部发件人
+   ↓
+Cloudflare Email Routing
+   ↓
+Mail 底座（Cloudflare Worker）
+   ├─ D1：域名、邮箱、邮件数据
+   ├─ 可选：邮件转发
+   └─ 内部 API
+        ↓
+Python 业务服务
+   ├─ 用户系统
+   ├─ 邮箱分配规则
+   ├─ TTL 策略
+   ├─ 风控
+   ├─ 收件箱接口
+   └─ 管理后台
+```
+
+---
+
+## 与 Python 的职责边界
+
+建议这样划分：
+
+### Mail 底座负责
+- 接收邮件
+- 保存邮件
+- 校验域名 / 邮箱是否允许接收
+- 暴露内部查询接口
+- 清理过期数据
+
+### Python 业务层负责
+- 创建用户
+- 给用户分配邮箱
+- 设置邮箱 TTL
+- 域名审核
+- 计费 / 配额 / 权限
+- 风控与限流
+- 面向前端的业务 API
+- 邮件展示页面
+
+---
+
+## 数据存储
+
+当前使用：
+
+- **Cloudflare Workers**
+- **Cloudflare Email Routing**
+- **Cloudflare D1**
+
+也就是说，本项目数据库是：
+
+> **Cloudflare D1（SQLite）**
+
+---
+
+## 数据模型
+
+### `domains`
+用于记录可接收域名。
+
+字段说明：
+
+- `id`
+- `domain`
+- `is_active`
+- `catch_all`
+- `created_at`
+- `updated_at`
+
+### `mailboxes`
+用于记录已注册邮箱地址。
+
+字段说明：
+
+- `id`
+- `address`
+- `local_part`
+- `domain`
+- `is_active`
+- `expires_at`
+- `metadata_json`
+- `created_at`
+- `updated_at`
+
+### `emails`
+用于记录邮件基础内容。
+
+字段说明：
+
+- `id`
+- `message_id`
+- `mailbox_address`
+- `domain`
+- `from_address`
+- `to_address`
+- `subject`
+- `text_body`
+- `html_body`
+- `headers_json`
+- `raw_size`
+- `received_at`
+
+---
+
+## 快速开始
+
+## 1. 安装依赖
 
 ```bash
 npm install
 ```
 
-### 2. 创建 D1 数据库（首次）
+## 2. 创建 D1 数据库
 
 ```bash
-# 创建远程数据库
-npx wrangler d1 create temp-email-db
-
-# 将输出的 database_id 填入 wrangler.toml
+npx wrangler d1 create mail-base-db
 ```
 
-### 3. 配置 `wrangler.toml`
+将输出的 `database_id` 填入 `wrangler.toml`。
 
-将上一步创建 D1 数据库返回的 `database_id` 填入 `wrangler.toml`：
+---
+
+## 3. 配置 `wrangler.toml`
+
+示例：
 
 ```toml
-name = "temp-email-worker"
+name = "mail-base"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "temp-email-db"
+database_name = "mail-base-db"
 database_id = "your-d1-database-id"
 
 [triggers]
-crons = ["0 * * * *"] # 每小时执行一次，自动清理超过 48 小时的数据库记录
+crons = ["0 * * * *"]
 ```
 
-### 4. 配置运行时变量
+---
 
-以下变量不要写入 `wrangler.toml`，建议按环境分别管理：
+## 4. 配置运行时变量
 
-- `ADMIN_TOKEN`：必填，后台登录令牌
-- `API_TOKEN`：必填，API 鉴权令牌
-- `FORWARD_TO`：可选，原始邮件转发目标地址
+推荐使用 `.dev.vars` 做本地开发配置。
 
-本地开发推荐使用 `.dev.vars`。可复制下面的示例到项目根目录的 `.dev.vars`：
+你可以从 `.dev.vars.example` 复制一份：
 
 ```bash
-ADMIN_TOKEN=dev-admin-token
-API_TOKEN=dev-api-token
-# 可选
+cp .dev.vars.example .dev.vars
+```
+
+一个推荐的示例：
+
+```bash
+# 内部 API 鉴权令牌
+# Python 业务层调用底座时使用
+INTERNAL_API_TOKEN=dev-internal-api-token
+
+# 可选：开启后，Worker 会将已成功接收的原始邮件继续转发到该邮箱
+# 该邮箱需要先在 Cloudflare Email Routing 的 Destination addresses 中验证
 FORWARD_TO=
+
+# 可选：邮件保留时间，单位小时
+# 超过这个时长的邮件会在定时任务中被清理
+EMAIL_RETENTION_HOURS=48
+
+# 可选：默认邮箱 TTL（秒）
+# 当前底座不会自动创建邮箱，也不会自动套用该值；
+# 这个值更适合给上层 Python 业务层当默认值参考
+DEFAULT_MAILBOX_TTL_SECONDS=1800
 ```
 
-生产环境推荐使用 Cloudflare Worker 的 **Secrets / Variables**：
+### 变量说明
 
-> 在项目根目录执行下面的命令，也就是包含 `wrangler.toml` 的目录。Wrangler 会把 secret 写入当前项目对应的 Cloudflare Worker。
-> 如果一键部署页面要求填写 `FORWARD_TO`，可以先留空；只有在需要自动转发原始邮件时才需要配置它。
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `INTERNAL_API_TOKEN` | 是 | 内部 API 鉴权令牌，供 Python 服务调用 |
+| `FORWARD_TO` | 否 | 邮件成功接收后，是否额外转发一份原始邮件 |
+| `EMAIL_RETENTION_HOURS` | 否 | 邮件保留时长，超过后会被定时清理 |
+| `DEFAULT_MAILBOX_TTL_SECONDS` | 否 | 给上层业务参考的默认邮箱 TTL 值 |
 
-```bash
-npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put API_TOKEN
+> 建议在线上环境中使用平台提供的 Secret / Variable 管理能力，不要把真实凭据直接写进仓库。
 
-# 可选：启用原始邮件自动转发时再设置
-npx wrangler secret put FORWARD_TO
-```
+---
 
-> 说明：`ADMIN_TOKEN`、`API_TOKEN` 建议始终使用 secret；`FORWARD_TO` 虽然不是严格敏感信息，但为了保持配置入口统一，也建议按同样方式管理。
+## 5. 执行数据库迁移
 
-### 5. 本地开发
+本地：
 
 ```bash
 npm run db:migrate:local
-npm run dev
-# 访问 http://localhost:8787
 ```
 
-> 首次本地启动前请先执行一次本地 migration，确保 D1 表结构已经就绪。
+远程：
 
-### 6. 部署
+```bash
+npm run db:migrate:remote
+```
+
+---
+
+## 6. 本地开发
+
+```bash
+npm run dev
+```
+
+默认访问地址：
+
+```text
+http://localhost:8787
+```
+
+---
+
+## 7. 部署
 
 ```bash
 npm run deploy
 ```
 
-> `npm run deploy` 会先部署 Worker，再自动执行远程 D1 migrations。部署成功后，数据库表结构应当已经可用。
+---
 
-### 7. 配置邮件路由 (Email Routing)
+## 8. 配置 Cloudflare Email Routing
 
-- 在 Cloudflare 控制台左侧菜单，找到 **Email** -> **Email Routing**
-- 进入 **Routes** 配置页
-- 根据需要配置 **Catch-all address** 或具体的 **Custom addresses**（Destination 均选择 `Send to a Worker`，并选择刚才部署的 `temp-email-worker`）
+在 Cloudflare 控制台中：
 
-> [!IMPORTANT]
-> 当你在 Cloudflare 邮件路由中将动作设置为 **"Send to a Worker"** 时，Cloudflare **不再**会自动将该邮件投递/转发到你原本的个人收件箱。Worker 会完全接管这条邮件的处理权。
-> 如果你希望 Worker 在提取数据的同时继续转发原邮件，请在下方“邮件转发配置”一节中设置 `FORWARD_TO`，并确保目标地址已经在 Cloudflare Email Routing 的 Destination addresses 中完成验证。
+- 打开 **Email**
+- 进入 **Email Routing**
+- 配置你的域名邮件路由
+- 将目标设置为 **Send to a Worker**
+- 选择当前 Worker
 
-### 可选：手动执行 / 修复 D1 migrations
+你可以按需选择：
 
-```bash
-# 本地 D1 migration
-npm run db:migrate:local
+- 具体地址路由
+- catch-all 路由
 
-# 远程 D1 migration
-npm run db:migrate:remote
+> 即使配置了 catch-all，底座也只会接收**已经预先创建**的邮箱地址。
+
+---
+
+## 推荐接入方式
+
+推荐采用：
+
+### 唯一模式：预注册地址
+
+由 Python 业务层先调用底座 API 注册一个邮箱地址，例如：
+
+- `abc123@example.com`
+- `order-001@example.com`
+
+然后底座只接收这些已注册邮箱的来信。
+
+**未预先创建的地址不会被接收，也不会自动生效。**
+
+---
+
+## 认证方式
+
+内部 API 统一使用以下任意一种方式鉴权：
+
+### 方式一：Bearer Token
+
+```http
+Authorization: Bearer <INTERNAL_API_TOKEN>
 ```
 
-> 说明：项目不再依赖首次访问时自动建表。只有在你需要单独修复数据库结构，或排查 migration 执行情况时，才需要手动执行上面的命令。
+### 方式二：自定义请求头
 
-## 邮件转发配置
-
-1. 在 Cloudflare **Email Routing** 的 **Destination addresses** 中添加并验证你的真实邮箱。
-2. 在 Worker 运行时变量中设置 `FORWARD_TO`。
-
-```bash
-# 本地开发：写入 .dev.vars（推荐从 .dev.vars.example 复制）
-FORWARD_TO="your-real@email.com"
-
-# 线上环境：推荐使用 secret，执行后按提示输入邮箱值
-npx wrangler secret put FORWARD_TO
+```http
+X-Internal-Token: <INTERNAL_API_TOKEN>
 ```
 
-3. 如果你更习惯在 Cloudflare 控制台操作，也可以在 Worker **Settings -> Variables** 中配置它。
+---
 
-> 提示：当 `FORWARD_TO` 为空时不会执行转发，仍会正常入库与规则解析。
+## 响应格式
 
-## 管理控制台
-
-- 管理控制台入口：`https://<your-worker-domain>/`
-- 使用 `ADMIN_TOKEN` 登录后台。
-- 管理端相关路由位于 `/admin/*`。
-
-## API 访问
-
-- API 路由位于 `/api/*`。
-- 调用 API 时使用 `API_TOKEN` 进行 Bearer 鉴权。
-
-### API 鉴权请求头
-
-```
-Authorization: Bearer <API_TOKEN>
-```
-
-### 查询最新命中结果
-
-```
-GET /api/emails/latest?address=<email_address>
-```
-
-**响应：**
+### 成功响应格式
 
 ```json
 {
   "code": 200,
   "data": {
-    "from_address": "noreply@example.com",
-    "to_address": "user@yourdomain.com",
-    "received_at": 1741881600000,
-    "results": [
-      { "rule_id": 1, "value": "123456", "remark": "验证码" }
+    "...": "..."
+  }
+}
+```
+
+### 错误响应格式
+
+```json
+{
+  "code": 400,
+  "message": "error message"
+}
+```
+
+---
+
+## API 文档
+
+下面所有示例都假设：
+
+- 服务地址：`http://localhost:8787`
+- 内部 Token：`dev-internal-api-token`
+
+你可以先设置 shell 变量：
+
+```bash
+BASE="http://localhost:8787"
+TOKEN="dev-internal-api-token"
+```
+
+---
+
+# 1. 公共接口
+
+## 1.1 服务说明
+
+### 请求
+
+```http
+GET /
+```
+
+### `curl`
+
+```bash
+curl "$BASE/"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "name": "mail capability base",
+    "status": "ok",
+    "routes": {
+      "health": "/health",
+      "internal_health": "/internal/health",
+      "domains": "/internal/domains",
+      "mailboxes": "/internal/mailboxes",
+      "mailbox_emails": "/internal/mailboxes/:address/emails",
+      "mailbox_latest": "/internal/mailboxes/:address/emails/latest",
+      "email_detail": "/internal/emails/:id"
+    }
+  }
+}
+```
+
+---
+
+## 1.2 公开健康检查
+
+### 请求
+
+```http
+GET /health
+```
+
+### `curl`
+
+```bash
+curl "$BASE/health"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "ok": true,
+    "service": "mail capability base"
+  }
+}
+```
+
+---
+
+# 2. 内部健康检查
+
+## 2.1 查询内部状态
+
+### 请求
+
+```http
+GET /internal/health
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl "$BASE/internal/health" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "ok": true,
+    "service": "mail-base",
+    "active_domains": 2,
+    "active_mailboxes": 18,
+    "total_emails": 356
+  }
+}
+```
+
+### 未授权响应示例
+
+```json
+{
+  "code": 401,
+  "message": "Unauthorized"
+}
+```
+
+---
+
+# 3. 域名管理
+
+## 3.1 创建域名
+
+### 请求
+
+```http
+POST /internal/domains
+Authorization: Bearer <INTERNAL_API_TOKEN>
+Content-Type: application/json
+```
+
+### 请求体示例
+
+```json
+{
+  "domain": "example.com",
+  "is_active": true,
+  "catch_all": false
+}
+```
+
+### `curl`
+
+```bash
+curl -X POST "$BASE/internal/domains" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "example.com",
+    "is_active": true,
+    "catch_all": false
+  }'
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 201,
+  "data": {
+    "item": {
+      "id": 1,
+      "domain": "example.com",
+      "is_active": true,
+      "catch_all": false,
+      "created_at": 1735000000000,
+      "updated_at": 1735000000000
+    }
+  }
+}
+```
+
+### 参数错误响应示例
+
+```json
+{
+  "code": 400,
+  "message": "domain is required"
+}
+```
+
+---
+
+## 3.2 获取域名列表
+
+### 请求
+
+```http
+GET /internal/domains
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### 可选查询参数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `include_disabled` | `boolean` | 是否包含已禁用域名，默认 `false` |
+
+### `curl`
+
+```bash
+curl "$BASE/internal/domains?include_disabled=true" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "domain": "example.com",
+        "is_active": true,
+        "catch_all": false,
+        "created_at": 1735000000000,
+        "updated_at": 1735000000000
+      },
+      {
+        "id": 2,
+        "domain": "mail-demo.com",
+        "is_active": false,
+        "catch_all": false,
+        "created_at": 1735000100000,
+        "updated_at": 1735000200000
+      }
     ]
   }
 }
 ```
 
-### API 进阶说明：字段定义
+---
 
-| 字段 | 类型 | 说明 |
+## 3.3 更新域名
+
+### 请求
+
+```http
+PATCH /internal/domains/:domain
+Authorization: Bearer <INTERNAL_API_TOKEN>
+Content-Type: application/json
+```
+
+### 请求体示例
+
+```json
+{
+  "is_active": false,
+  "catch_all": false
+}
+```
+
+### `curl`
+
+```bash
+curl -X PATCH "$BASE/internal/domains/example.com" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "is_active": false,
+    "catch_all": false
+  }'
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "item": {
+      "id": 1,
+      "domain": "example.com",
+      "is_active": false,
+      "catch_all": false,
+      "created_at": 1735000000000,
+      "updated_at": 1735000300000
+    }
+  }
+}
+```
+
+### 不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "domain not found"
+}
+```
+
+---
+
+## 3.4 删除域名
+
+### 请求
+
+```http
+DELETE /internal/domains/:domain
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl -X DELETE "$BASE/internal/domains/example.com" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "ok": true
+  }
+}
+```
+
+### 不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "domain not found"
+}
+```
+
+---
+
+# 4. 邮箱管理
+
+## 4.1 创建邮箱
+
+### 请求
+
+```http
+POST /internal/mailboxes
+Authorization: Bearer <INTERNAL_API_TOKEN>
+Content-Type: application/json
+```
+
+### 请求体说明
+
+| 字段 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `address` | 是 | `string` | 完整邮箱地址 |
+| `expires_at` | 否 | `number \| string \| null` | 过期时间，支持毫秒时间戳或日期字符串 |
+| `metadata` | 否 | `object` | 业务自定义元数据 |
+| `metadata_json` | 否 | `object \| string` | 与 `metadata` 二选一 |
+
+### 请求体示例
+
+```json
+{
+  "address": "demo@example.com",
+  "expires_at": 1735689600000,
+  "metadata": {
+    "source": "python-service",
+    "user_id": 1001
+  }
+}
+```
+
+### `curl`
+
+```bash
+curl -X POST "$BASE/internal/mailboxes" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "demo@example.com",
+    "expires_at": 1735689600000,
+    "metadata": {
+      "source": "python-service",
+      "user_id": 1001
+    }
+  }'
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 201,
+  "data": {
+    "item": {
+      "id": 1,
+      "address": "demo@example.com",
+      "local_part": "demo",
+      "domain": "example.com",
+      "is_active": true,
+      "expires_at": 1735689600000,
+      "metadata": {
+        "source": "python-service",
+        "user_id": 1001
+      },
+      "created_at": 1735001000000,
+      "updated_at": 1735001000000
+    }
+  }
+}
+```
+
+### 域名不存在或邮箱已存在响应示例
+
+```json
+{
+  "code": 400,
+  "message": "mailbox domain is not active or mailbox already exists"
+}
+```
+
+### 地址错误响应示例
+
+```json
+{
+  "code": 400,
+  "message": "address must be a valid email address"
+}
+```
+
+### 过期时间格式错误响应示例
+
+```json
+{
+  "code": 400,
+  "message": "expires_at must be a unix timestamp(ms) or valid datetime string"
+}
+```
+
+---
+
+## 4.2 获取邮箱列表
+
+### 请求
+
+```http
+GET /internal/mailboxes
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### 可选查询参数
+
+| 参数 | 类型 | 说明 |
 |------|------|------|
-| `code` | `number` | 业务状态码，200 表示成功 |
-| `data.from_address` | `string` | 发件人电子邮箱地址 |
-| `data.to_address` | `string` | 收件人电子邮箱地址 |
-| `data.received_at` | `number` | 邮件接收时间戳（13位毫秒） |
-| `data.results` | `array` | 命中规则提取的结果列表 |
-| `..rule_id` | `number` | 匹配到的规则唯一 ID |
-| `..value` | `string` | 正则匹配提取到的实际内容 |
-| `..remark` | `string` | 规则的备注说明（可能为 null） |
+| `page` | `number` | 页码，默认 `1` |
+| `page_size` | `number` | 每页数量，默认 `20` |
+| `domain` | `string` | 按域名过滤 |
+| `include_expired` | `boolean` | 是否包含过期邮箱，默认 `false` |
 
-## 规则说明
+### `curl`
 
-每条规则由三部分组成：
+```bash
+curl "$BASE/internal/mailboxes?page=1&page_size=20&domain=example.com" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-| 字段 | 说明 |
-|------|------|
-| `remark` | 备注名称，作为返回结果的标签（可选） |
-| `sender_filter` | 发信人过滤，支持正则，多个用逗号或换行分隔，留空匹配所有 |
-| `pattern` | 内容提取正则，对邮件正文匹配，取第一个完整匹配 |
+### 成功响应示例
 
-## 白名单说明
+```json
+{
+  "code": 200,
+  "data": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 2,
+    "items": [
+      {
+        "id": 1,
+        "address": "demo@example.com",
+        "local_part": "demo",
+        "domain": "example.com",
+        "is_active": true,
+        "expires_at": 1735689600000,
+        "metadata": {
+          "source": "python-service",
+          "user_id": 1001
+        },
+        "created_at": 1735001000000,
+        "updated_at": 1735001000000
+      },
+      {
+        "id": 2,
+        "address": "verify@example.com",
+        "local_part": "verify",
+        "domain": "example.com",
+        "is_active": true,
+        "expires_at": null,
+        "metadata": {
+          "source": "python-service"
+        },
+        "created_at": 1735001100000,
+        "updated_at": 1735001100000
+      }
+    ]
+  }
+}
+```
 
-- 白名单为空时接受所有邮件。
-- 白名单规则支持正则表达式，匹配不通过的发件人将被直接忽略。
+---
 
-**示例**：提取来自 `example.com` 的6位验证码
+## 4.3 获取单个邮箱
 
-| 字段 | 值 |
-|------|----|
-| remark | `验证码` |
-| sender_filter | `.*@example\.com` |
-| pattern | `\b\d{6}\b` |
+### 请求
+
+```http
+GET /internal/mailboxes/:address
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl "$BASE/internal/mailboxes/demo@example.com" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "item": {
+      "id": 1,
+      "address": "demo@example.com",
+      "local_part": "demo",
+      "domain": "example.com",
+      "is_active": true,
+      "expires_at": 1735689600000,
+      "metadata": {
+        "source": "python-service",
+        "user_id": 1001
+      },
+      "created_at": 1735001000000,
+      "updated_at": 1735001000000
+    }
+  }
+}
+```
+
+### 不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "mailbox not found"
+}
+```
+
+---
+
+## 4.4 删除邮箱
+
+### 请求
+
+```http
+DELETE /internal/mailboxes/:address
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl -X DELETE "$BASE/internal/mailboxes/demo@example.com" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "ok": true
+  }
+}
+```
+
+### 不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "mailbox not found"
+}
+```
+
+---
+
+# 5. 邮件查询
+
+## 5.1 获取某邮箱邮件列表
+
+### 请求
+
+```http
+GET /internal/mailboxes/:address/emails
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### 可选查询参数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `page` | `number` | 页码，默认 `1` |
+| `page_size` | `number` | 每页数量，默认 `20` |
+
+### `curl`
+
+```bash
+curl "$BASE/internal/mailboxes/demo@example.com/emails?page=1&page_size=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 2,
+    "mailbox": {
+      "id": 1,
+      "address": "demo@example.com",
+      "local_part": "demo",
+      "domain": "example.com",
+      "is_active": true,
+      "expires_at": 1735689600000,
+      "metadata": {
+        "source": "python-service",
+        "user_id": 1001
+      },
+      "created_at": 1735001000000,
+      "updated_at": 1735001000000
+    },
+    "items": [
+      {
+        "id": 11,
+        "message_id": "<message-001@example.net>::demo@example.com",
+        "mailbox_address": "demo@example.com",
+        "domain": "example.com",
+        "from_address": "noreply@example.net",
+        "to_address": "demo@example.com",
+        "subject": "Your verification code",
+        "text_body": "Your code is 123456",
+        "html_body": "<p>Your code is <b>123456</b></p>",
+        "headers": {
+          "message-id": "<message-001@example.net>",
+          "from": "noreply@example.net",
+          "to": "demo@example.com"
+        },
+        "raw_size": 2048,
+        "received_at": 1735002000000
+      },
+      {
+        "id": 10,
+        "message_id": "<message-000@example.net>::demo@example.com",
+        "mailbox_address": "demo@example.com",
+        "domain": "example.com",
+        "from_address": "alert@example.net",
+        "to_address": "demo@example.com",
+        "subject": "Welcome",
+        "text_body": "welcome",
+        "html_body": "",
+        "headers": {
+          "message-id": "<message-000@example.net>"
+        },
+        "raw_size": 1024,
+        "received_at": 1735001900000
+      }
+    ]
+  }
+}
+```
+
+### 邮箱不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "mailbox not found"
+}
+```
+
+---
+
+## 5.2 获取某邮箱最新邮件
+
+### 请求
+
+```http
+GET /internal/mailboxes/:address/emails/latest
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl "$BASE/internal/mailboxes/demo@example.com/emails/latest" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "item": {
+      "id": 11,
+      "message_id": "<message-001@example.net>::demo@example.com",
+      "mailbox_address": "demo@example.com",
+      "domain": "example.com",
+      "from_address": "noreply@example.net",
+      "to_address": "demo@example.com",
+      "subject": "Your verification code",
+      "text_body": "Your code is 123456",
+      "html_body": "<p>Your code is <b>123456</b></p>",
+      "headers": {
+        "message-id": "<message-001@example.net>",
+        "from": "noreply@example.net",
+        "to": "demo@example.com"
+      },
+      "raw_size": 2048,
+      "received_at": 1735002000000
+    }
+  }
+}
+```
+
+### 没有邮件响应示例
+
+```json
+{
+  "code": 404,
+  "message": "message not found"
+}
+```
+
+---
+
+## 5.3 获取单封邮件详情
+
+### 请求
+
+```http
+GET /internal/emails/:id
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl "$BASE/internal/emails/11" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "item": {
+      "id": 11,
+      "message_id": "<message-001@example.net>::demo@example.com",
+      "mailbox_address": "demo@example.com",
+      "domain": "example.com",
+      "from_address": "noreply@example.net",
+      "to_address": "demo@example.com",
+      "subject": "Your verification code",
+      "text_body": "Your code is 123456",
+      "html_body": "<p>Your code is <b>123456</b></p>",
+      "headers": {
+        "message-id": "<message-001@example.net>",
+        "from": "noreply@example.net",
+        "to": "demo@example.com",
+        "x-mail-base-attachments": []
+      },
+      "raw_size": 2048,
+      "received_at": 1735002000000
+    }
+  }
+}
+```
+
+### 不存在响应示例
+
+```json
+{
+  "code": 404,
+  "message": "message not found"
+}
+```
+
+---
+
+## 5.4 兼容接口：按地址获取最新邮件
+
+这是一个兼容接口，便于旧调用方式继续使用。
+
+### 请求
+
+```http
+GET /api/emails/latest?address=<email>
+Authorization: Bearer <INTERNAL_API_TOKEN>
+```
+
+### `curl`
+
+```bash
+curl "$BASE/api/emails/latest?address=demo@example.com" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 成功响应示例
+
+```json
+{
+  "code": 200,
+  "data": {
+    "item": {
+      "id": 11,
+      "message_id": "<message-001@example.net>::demo@example.com",
+      "mailbox_address": "demo@example.com",
+      "domain": "example.com",
+      "from_address": "noreply@example.net",
+      "to_address": "demo@example.com",
+      "subject": "Your verification code",
+      "text_body": "Your code is 123456",
+      "html_body": "<p>Your code is <b>123456</b></p>",
+      "headers": {
+        "message-id": "<message-001@example.net>",
+        "from": "noreply@example.net",
+        "to": "demo@example.com"
+      },
+      "raw_size": 2048,
+      "received_at": 1735002000000
+    }
+  }
+}
+```
+
+---
+
+# 6. 典型接入流程
+
+## 步骤 1：创建域名
+
+```bash
+curl -X POST "$BASE/internal/domains" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "example.com",
+    "is_active": true,
+    "catch_all": false
+  }'
+```
+
+## 步骤 2：创建邮箱
+
+```bash
+curl -X POST "$BASE/internal/mailboxes" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "demo@example.com",
+    "expires_at": 1735689600000,
+    "metadata": {
+      "source": "python-service"
+    }
+  }'
+```
+
+## 步骤 3：外部向该邮箱发邮件
+
+发件人发送到：
+
+```text
+demo@example.com
+```
+
+## 步骤 4：查询最新邮件
+
+```bash
+curl "$BASE/internal/mailboxes/demo@example.com/emails/latest" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+# 7. Python 对接建议
+
+推荐你的 Python 服务这样接入：
+
+### 1. 创建业务邮箱
+Python 根据业务逻辑生成地址，例如：
+
+- 用户注册时生成临时邮箱
+- 某任务生成一次性邮箱
+- 某订单绑定专用邮箱
+
+然后调用底座 API 注册：
+
+```text
+POST /internal/mailboxes
+```
+
+### 2. 使用该邮箱接收邮件
+用户或外部系统往该地址发信。
+
+注意：**只有已经通过底座 API 创建过的邮箱地址才会被接收。**
+
+### 3. 轮询或同步查询
+Python 定时调用：
+
+```text
+GET /internal/mailboxes/:address/emails/latest
+```
+
+或者：
+
+```text
+GET /internal/mailboxes/:address/emails
+```
+
+### 4. 在 Python 中执行业务逻辑
+例如：
+
+- 提取验证码
+- 同步到你的主业务数据库
+- 告知前端新邮件到达
+- 做状态流转
+
+---
+
+## 清理策略建议
+
+建议底座默认执行两类清理：
+
+### 1. 邮箱清理
+删除已过期的邮箱地址。
+
+### 2. 邮件清理
+删除超出保留时长的邮件。
+
+### 推荐策略
+- 一次性验证码邮箱：保留 30 分钟到 24 小时
+- 邮件正文：保留 24 到 72 小时
+- 长期业务邮箱：由 Python 业务层控制是否续期
+
+---
 
 ## 本地测试
 
-**发送测试邮件（触发 email handler）：**
+你可以使用示例邮件文件测试 Worker 的邮件处理能力。
+
+### 先创建测试域名
 
 ```bash
-curl -X POST "http://localhost:8787/cdn-cgi/handler/email?from=sender@example.com&to=demo@yourdomain.com" \
+curl -X POST "$BASE/internal/domains" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "example.com",
+    "is_active": true,
+    "catch_all": false
+  }'
+```
+
+### 再创建测试邮箱
+
+```bash
+curl -X POST "$BASE/internal/mailboxes" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "demo@example.com",
+    "metadata": {
+      "source": "local-test"
+    }
+  }'
+```
+
+### 发送测试邮件
+
+```bash
+curl -X POST "http://localhost:8787/cdn-cgi/handler/email?from=sender@example.com&to=demo@example.com" \
   --data-binary @./test/sample.eml
 ```
 
-**查询最新命中结果：**
+### 查询最新邮件
 
 ```bash
-curl "http://localhost:8787/api/emails/latest?address=demo@yourdomain.com" \
-  -H "Authorization: Bearer dev-api-token"
+curl "$BASE/internal/mailboxes/demo@example.com/emails/latest" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-## 项目结构
+如果你已经预先注册了 `demo@example.com`，则邮件应被底座正常接收并入库。
 
-```
-├── migrations/
-│   └── 0001_init.sql            # D1 初始表结构 migration
-├── .dev.vars.example            # 本地开发变量示例
+---
+
+## 目录结构
+
+```text
+maildizuo/
+├── migrations/           # D1 数据库迁移
 ├── src/
-│   ├── index.js                 # Worker 入口（协调各模块处理事件）
-│   ├── core/
-│   │   ├── auth.js              # 管理员与 API 鉴权校验
-│   │   ├── db.js                # D1 数据存取操作
-│   │   └── logic.js             # 邮件解析与正则匹配核心业务
-│   ├── handlers/
-│   │   └── handlers.js          # HTTP 路由处理函数集合
-│   ├── ui/
-│   │   └── templates.js         # UI HTML/CSS 模板
-│   └── utils/
-│       ├── constants.js         # 全局常量定义
-│       └── utils.js             # 通用 JSON 响应与助手函数
-├── test/
-│   └── sample.eml               # 本地测试用示例邮件
-├── images/                      # README 截图
-├── wrangler.toml                # Wrangler 配置
-└── package.json
+│   ├── core/             # 核心能力：认证、数据库、邮件处理
+│   ├── handlers/         # 内部 API 路由处理
+│   ├── utils/            # 工具函数与常量
+│   └── index.js          # Worker 入口
+├── test/                 # 测试样例邮件
+├── .dev.vars.example     # 本地开发变量示例
+├── package.json
+├── README.md
+└── wrangler.toml
 ```
 
-## License
+---
+
+## 后续扩展建议
+
+如果你后续需要更强的能力，可以继续往底座增加：
+
+- webhook 事件通知
+- 邮件原始 MIME 下载
+- 附件索引与下载
+- 域名自动校验
+- 邮件接收审计日志
+- 死信 / 异常邮件队列
+- 更细粒度的内部服务鉴权
+
+但仍然建议把下面这些能力留在 Python：
+
+- 业务提取规则
+- 账号系统
+- 面向前端的产品 API
+- 收件箱 UI
+- 用户权限与配额
+- 风控策略
+
+---
+
+## 许可证
 
 MIT

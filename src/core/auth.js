@@ -1,36 +1,59 @@
-// ─── 认证助手函数 ─────────────────────────────────────────────────────────────
+/**
+ * Internal service authentication helpers.
+ *
+ * This project now acts as a mail capability base, so management and query
+ * routes should only be accessed by trusted internal services such as the
+ * Python business layer.
+ */
+
+const BEARER_PREFIX = "Bearer ";
 
 /**
- * 校验管理后台访问权限（Bearer Token 或 Cookie）
+ * Normalize a token value.
  */
-export function isAdminAuthorized(request, adminToken) {
-  if (!adminToken) return false;
-  if (getBearerToken(request) === adminToken) return true;
-  const cookies = parseCookies(request.headers.get("Cookie") || "");
-  return cookies.admin_token === adminToken;
+function normalizeToken(value) {
+  return String(value || "").trim();
 }
 
 /**
- * 校验 API 访问权限 (仅限 API Token)
+ * Extract a bearer token from the Authorization header.
+ */
+export function getBearerToken(request) {
+  const header = String(request.headers.get("Authorization") || "").trim();
+  if (!header.startsWith(BEARER_PREFIX)) return "";
+  return normalizeToken(header.slice(BEARER_PREFIX.length));
+}
+
+/**
+ * Read the internal token from the dedicated header.
+ */
+export function getInternalHeaderToken(request) {
+  return normalizeToken(request.headers.get("X-Internal-Token"));
+}
+
+/**
+ * Check whether a request is authorized with the expected internal token.
+ *
+ * Supported auth methods:
+ * - Authorization: Bearer <token>
+ * - X-Internal-Token: <token>
+ */
+export function isInternalAuthorized(request, internalToken) {
+  const expectedToken = normalizeToken(internalToken);
+  if (!expectedToken) return false;
+
+  const bearerToken = getBearerToken(request);
+  if (bearerToken && bearerToken === expectedToken) return true;
+
+  const headerToken = getInternalHeaderToken(request);
+  if (headerToken && headerToken === expectedToken) return true;
+
+  return false;
+}
+
+/**
+ * Backward-compatible alias used by the current entrypoint.
  */
 export function isApiAuthorized(request, apiToken) {
-  if (!apiToken) return false;
-  return getBearerToken(request) === apiToken;
-}
-
-/**
- * 获取请求头中的 Bearer Token
- */
-function getBearerToken(request) {
-  const header = request.headers.get("Authorization") || "";
-  return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-}
-
-function parseCookies(cookieHeader) {
-  const output = {};
-  for (const part of String(cookieHeader || "").split(";")) {
-    const [rawKey, ...rest] = part.trim().split("=");
-    if (rawKey) output[rawKey] = decodeURIComponent(rest.join("="));
-  }
-  return output;
+  return isInternalAuthorized(request, apiToken);
 }

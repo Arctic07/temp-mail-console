@@ -1,19 +1,24 @@
-// ─── 页面设置与全局常量 ───────────────────────────────────────────────────────
-
 export const PAGE_SIZE = 20;
-export const RULES_PAGE_SIZE = 12;
+export const MAX_PAGE_SIZE = 100;
 
-// Defensive limits (avoid excessive regex backtracking / huge payloads)
-export const MAX_MATCH_CONTENT_CHARS = 20000;
-export const MAX_RULE_PATTERN_LENGTH = 2000;
-export const MAX_SENDER_PATTERN_LENGTH = 500;
-export const MAX_SENDER_FILTER_LENGTH = 2000;
-export const MAX_RULE_REMARK_LENGTH = 200;
+export const DEFAULT_EMAIL_RETENTION_HOURS = 48;
+export const DEFAULT_MAILBOX_TTL_SECONDS = 1800;
+
+export const MAX_EMAIL_BODY_CHARS = 100000;
+export const MAX_HTML_BODY_CHARS = 200000;
+export const MAX_HEADERS_JSON_CHARS = 50000;
+
+export const MAX_DOMAIN_LENGTH = 255;
+export const MAX_LOCAL_PART_LENGTH = 64;
+export const MAX_ADDRESS_LENGTH = 320;
 
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization"
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "Authorization, Content-Type, X-Internal-Token",
 };
 
-export const HTML_HEADERS = { "Content-Type": "text/html; charset=utf-8" };
+export const JSON_HEADERS = {
+  "Content-Type": "application/json; charset=utf-8",
+};

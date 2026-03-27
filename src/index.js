@@ -1,88 +1,201 @@
-import { PAGE_SIZE, RULES_PAGE_SIZE, HTML_HEADERS, CORS_HEADERS } from "./utils/constants.js";
-import { jsonError, applyCors } from "./utils/utils.js";
-import { isAdminAuthorized, isApiAuthorized } from "./core/auth.js";
-import { clearExpiredEmails } from "./core/db.js";
+import { CORS_HEADERS } from "./utils/constants.js";
+import { isInternalAuthorized } from "./core/auth.js";
+import { clearExpiredEmails, clearExpiredMailboxes } from "./core/db.js";
 import { processIncomingEmail } from "./core/logic.js";
+import { applyCors, json, jsonError } from "./utils/utils.js";
 import * as handlers from "./handlers/handlers.js";
-import { renderAuthHtml, renderHtml } from "./ui/templates.js";
 
-function apiOptionsResponse() {
-  return new Response(null, { status: 204, headers: { ...CORS_HEADERS } });
+function withCors(response) {
+  return applyCors(response, CORS_HEADERS);
 }
 
-function apiJsonError(message, status = 400) {
-  return applyCors(jsonError(message, status), CORS_HEADERS);
+function jsonWithCors(data, status = 200) {
+  return withCors(json(data, status));
+}
+
+function jsonErrorWithCors(message, status = 400) {
+  return withCors(jsonError(message, status));
+}
+
+function optionsResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: { ...CORS_HEADERS },
+  });
+}
+
+function isAuthorized(request, env) {
+  return isInternalAuthorized(request, env.INTERNAL_API_TOKEN);
+}
+
+function getEmailRetentionHours(env) {
+  const value = Number(env.EMAIL_RETENTION_HOURS);
+  return Number.isFinite(value) && value > 0 ? value : 48;
+}
+
+function isMailboxEmailsPath(pathname) {
+  return /^\/internal\/mailboxes\/.+\/emails$/.test(pathname);
+}
+
+function isMailboxLatestPath(pathname) {
+  return /^\/internal\/mailboxes\/.+\/emails\/latest$/.test(pathname);
+}
+
+function isMailboxItemPath(pathname) {
+  return (
+    /^\/internal\/mailboxes\/.+$/.test(pathname) &&
+    !isMailboxEmailsPath(pathname) &&
+    !isMailboxLatestPath(pathname)
+  );
+}
+
+function isDomainItemPath(pathname) {
+  return /^\/internal\/domains\/.+$/.test(pathname);
+}
+
+function isEmailItemPath(pathname) {
+  return /^\/internal\/emails\/\d+$/.test(pathname);
 }
 
 export default {
-  /**
-   * 处理入站邮件
-   */
   async email(message, env, ctx) {
-    const parsed = await processIncomingEmail(message, env, ctx);
+    const result = await processIncomingEmail(message, env, ctx);
 
-    // 如果处理成功（通过白名单）且设置了全局转发
-    if (parsed && env.FORWARD_TO) {
+    if (result?.accepted && env.FORWARD_TO) {
       try {
         await message.forward(env.FORWARD_TO);
-      } catch (err) {
-        console.error("邮件转发失败:", err);
+      } catch (error) {
+        console.error("forward failed", error);
       }
     }
   },
 
-  /**
-   * 处理 HTTP 请求
-   */
   async fetch(request, env) {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
 
-    // 1. API 路由 (/api/...)
-    if (pathname === "/api/emails/latest") {
-      if (method === "OPTIONS") return apiOptionsResponse();
-      if (method !== "GET") return apiJsonError("Method Not Allowed", 405);
-      if (!isApiAuthorized(request, env.API_TOKEN)) return apiJsonError("Unauthorized", 401);
-      const res = await handlers.handleEmailsLatest(url, env.DB);
-      return applyCors(res, CORS_HEADERS);
+    if (method === "OPTIONS") {
+      return optionsResponse();
     }
 
-    // 2. 静态页面 (Dashboard)
-    if (pathname === "/") {
-      if (!isAdminAuthorized(request, env.ADMIN_TOKEN)) {
-        return new Response(renderAuthHtml(), { headers: HTML_HEADERS });
+    if (pathname === "/" && method === "GET") {
+      return jsonWithCors({
+        name: "mail capability base",
+        status: "ok",
+        routes: {
+          health: "/health",
+          internal_health: "/internal/health",
+          domains: "/internal/domains",
+          mailboxes: "/internal/mailboxes",
+          mailbox_emails: "/internal/mailboxes/:address/emails",
+          mailbox_latest: "/internal/mailboxes/:address/emails/latest",
+          email_detail: "/internal/emails/:id",
+        },
+      });
+    }
+
+    if (pathname === "/health" && method === "GET") {
+      return jsonWithCors({
+        ok: true,
+        service: "mail capability base",
+      });
+    }
+
+    if (!pathname.startsWith("/internal/")) {
+      return new Response("Not Found", { status: 404 });
+    }
+
+    if (!isAuthorized(request, env)) {
+      return jsonErrorWithCors("Unauthorized", 401);
+    }
+
+    try {
+      if (pathname === "/internal/health" && method === "GET") {
+        return withCors(await handlers.handleHealth(url, env.DB));
       }
-      return new Response(renderHtml(PAGE_SIZE, RULES_PAGE_SIZE), { headers: HTML_HEADERS });
+
+      if (pathname === "/internal/domains" && method === "GET") {
+        return withCors(await handlers.handleDomainsGet(url, env.DB));
+      }
+
+      if (pathname === "/internal/domains" && method === "POST") {
+        return withCors(await handlers.handleDomainsPost(request, env.DB));
+      }
+
+      if (isDomainItemPath(pathname) && method === "PATCH") {
+        return withCors(
+          await handlers.handleDomainsPatch(pathname, request, env.DB),
+        );
+      }
+
+      if (isDomainItemPath(pathname) && method === "DELETE") {
+        return withCors(await handlers.handleDomainsDelete(pathname, env.DB));
+      }
+
+      if (pathname === "/internal/mailboxes" && method === "GET") {
+        return withCors(await handlers.handleMailboxesGet(url, env.DB));
+      }
+
+      if (pathname === "/internal/mailboxes" && method === "POST") {
+        return withCors(await handlers.handleMailboxesPost(request, env.DB));
+      }
+
+      if (isMailboxLatestPath(pathname) && method === "GET") {
+        const basePath = pathname.replace(/\/emails\/latest$/, "");
+        const latestUrl = new URL(request.url);
+        const address = decodeURIComponent(
+          basePath.replace("/internal/mailboxes/", ""),
+        );
+        latestUrl.searchParams.set("address", address);
+        return withCors(await handlers.handleMailboxLatest(latestUrl, env.DB));
+      }
+
+      if (isMailboxEmailsPath(pathname) && method === "GET") {
+        return withCors(
+          await handlers.handleMailboxEmails(pathname, url, env.DB),
+        );
+      }
+
+      if (isMailboxItemPath(pathname) && method === "GET") {
+        return withCors(await handlers.handleMailboxGet(pathname, env.DB));
+      }
+
+      if (isMailboxItemPath(pathname) && method === "DELETE") {
+        return withCors(await handlers.handleMailboxesDelete(pathname, env.DB));
+      }
+
+      if (isEmailItemPath(pathname) && method === "GET") {
+        return withCors(await handlers.handleEmailGet(pathname, env.DB));
+      }
+
+      if (pathname === "/api/emails/latest" && method === "GET") {
+        return withCors(await handlers.handleMailboxLatest(url, env.DB));
+      }
+
+      return jsonErrorWithCors("Not Found", 404);
+    } catch (error) {
+      console.error("request handling failed", error);
+      return jsonErrorWithCors("Internal Server Error", 500);
     }
-
-    // 3. 管理端路由 (/admin/...)
-    if (pathname.startsWith("/admin/")) {
-      if (!isAdminAuthorized(request, env.ADMIN_TOKEN)) return new Response("Unauthorized", { status: 401 });
-
-      // 分发请求
-      if (pathname === "/admin/domains" && method === "GET") return handlers.handleAdminDomains(url, env.DB);
-      if (pathname === "/admin/emails" && method === "GET") return handlers.handleAdminEmails(url, env.DB);
-      if (pathname === "/admin/rules" && method === "GET") return handlers.handleAdminRulesGet(url, env.DB);
-      if (pathname === "/admin/rules" && method === "POST") return handlers.handleAdminRulesPost(request, env.DB);
-      if (pathname.startsWith("/admin/rules/") && method === "DELETE") return handlers.handleAdminRulesDelete(pathname, env.DB);
-      if (pathname === "/admin/whitelist" && method === "GET") return handlers.handleAdminWhitelistGet(url, env.DB);
-      if (pathname === "/admin/whitelist" && method === "POST") return handlers.handleAdminWhitelistPost(request, env.DB);
-      if (pathname.startsWith("/admin/whitelist/") && method === "DELETE") return handlers.handleAdminWhitelistDelete(pathname, env.DB);
-    }
-
-    if (pathname.startsWith("/api/")) return apiJsonError("Not Found", 404);
-    return new Response("Not Found", { status: 404 });
   },
 
-  /**
-   * 定时清理任务
-   */
   async scheduled(_event, env, ctx) {
+    const retentionHours = getEmailRetentionHours(env);
+
     ctx.waitUntil(
-      clearExpiredEmails(env.DB, 48)
-        .then(() => console.log("[Cron] 自动清理完毕"))
-        .catch(err => console.error("[Cron] 自动清理失败:", err))
+      Promise.all([
+        clearExpiredMailboxes(env.DB),
+        clearExpiredEmails(env.DB, retentionHours),
+      ])
+        .then(() => {
+          console.log(
+            `[Cron] cleanup completed: expired mailboxes removed, emails older than ${retentionHours}h deleted`,
+          );
+        })
+        .catch((error) => {
+          console.error("[Cron] cleanup failed", error);
+        }),
     );
-  }
+  },
 };

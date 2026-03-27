@@ -1,4 +1,27 @@
-ADMIN_TOKEN=dev-admin-token
-API_TOKEN=dev-api-token
-# Optional: forward original emails to a verified Email Routing destination address.
+# 邮件能力底座的本地开发环境变量示例。
+# 在执行 `npm run dev` 之前，请先将此文件复制为 `.dev.vars`。
+
+# 必填：内部 API 鉴权令牌。
+# 你的 Python 业务层调用受保护的 `/internal/*` 接口时需要使用它。
+# 请求头示例：
+#   Authorization: Bearer dev-internal-api-token
+# 或：
+#   X-Internal-Token: dev-internal-api-token
+INTERNAL_API_TOKEN=dev-internal-api-token
+
+# 可选：将“已成功接收”的入站邮件继续转发到一个
+# 已在 Cloudflare Email Routing 中验证过的目标邮箱地址。
+# 留空表示不启用转发。
 FORWARD_TO=
+
+# 可选：已存储邮件的保留时长，单位为小时。
+# 定时清理任务会删除早于该时长的邮件记录。
+# 代码中的默认值为：48
+EMAIL_RETENTION_HOURS=48
+
+# 可选：默认邮箱 TTL（单位：秒）。
+# 这个值主要给你的 Python 业务层在创建邮箱时作为默认值参考。
+# Worker 本身不会自动套用该值，除非你的业务服务在创建邮箱时
+# 主动传入 `expires_at`。
+# 示例：1800 = 30 分钟
+DEFAULT_MAILBOX_TTL_SECONDS=1800
